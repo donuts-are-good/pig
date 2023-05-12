@@ -1,3 +1,5 @@
+![donuts-are-good's followers](https://img.shields.io/github/followers/donuts-are-good?&color=555&style=for-the-badge&label=followers) ![donuts-are-good's stars](https://img.shields.io/github/stars/donuts-are-good?affiliations=OWNER%2CCOLLABORATOR&color=555&style=for-the-badge) ![donuts-are-good's visitors](https://komarev.com/ghpvc/?username=donuts-are-good&color=555555&style=for-the-badge&label=visitors)
+
 # Pig - A DNS Intelligence Tool
 
 Pig is a DNS information gathering tool that allows you to retrieve and make inferences about various types of DNS records for a given domain. With Pig, you can quickly retrieve the A, AAAA, NS, MX, TXT, CNAME, SRV, SPF, PTR, and Reverse Lookup records for a domain in an easy human-readable report. 
