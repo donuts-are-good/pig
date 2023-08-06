@@ -1,3 +1,4 @@
+![pigdnslogo](https://github.com/donuts-are-good/pig/assets/96031819/0cc8836a-59c5-4d93-bbb1-6268d5734880)
 ![donuts-are-good's followers](https://img.shields.io/github/followers/donuts-are-good?&color=555&style=for-the-badge&label=followers) ![donuts-are-good's stars](https://img.shields.io/github/stars/donuts-are-good?affiliations=OWNER%2CCOLLABORATOR&color=555&style=for-the-badge) ![donuts-are-good's visitors](https://komarev.com/ghpvc/?username=donuts-are-good&color=555555&style=for-the-badge&label=visitors)
 
 # Pig - A DNS Intelligence Tool
