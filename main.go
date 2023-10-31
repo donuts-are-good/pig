@@ -12,6 +12,10 @@ import (
 )
 
 func main() {
+	if len(os.Args) < 2 {
+		fmt.Println(os.Args[0], "domain")
+		os.Exit(1)
+	}
 	domain := os.Args[1]
 	aRecords(domain)
 	aaaaRecords(domain)
