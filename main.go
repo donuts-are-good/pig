@@ -8,7 +8,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
+	"time"
 )
 
 func main() {
@@ -27,6 +30,10 @@ func main() {
 	spfRecords(domain)
 	srvRecords(domain)
 	txtRecords(domain)
+
+	checkZoneTransfer(domain)
+	checkDNSAmplification(domain)
+	checkAXFR(domain)
 }
 
 func aRecords(domain string) {
@@ -447,6 +454,193 @@ func asnLookup(ip net.IP) {
 
 			fmt.Printf("ASN: %s, Name: %s, AllocatedAt: %s, Country: %s, Range: %s, Registry: %s\n",
 				asn, asName, allocated, country, ipRange, registry)
+		}
+	}
+}
+
+func checkZoneTransfer(domain string) {
+	nameservers, err := net.LookupNS(domain)
+	if err != nil {
+		fmt.Printf("Error looking up nameservers: %v\n", err)
+		return
+	}
+
+	fmt.Println("\n[Zone Transfer Vulnerability Check]")
+	for _, ns := range nameservers {
+		fmt.Printf("Checking %s:\n", ns.Host)
+
+		axfrCmd := exec.Command("dig", "+short", "+time=5", "+tries=1", "axfr", domain, "@"+ns.Host)
+		axfrOutput, _ := axfrCmd.CombinedOutput()
+
+		ixfrCmd := exec.Command("dig", "+short", "+time=5", "+tries=1", "ixfr=1", domain, "@"+ns.Host)
+		ixfrOutput, _ := ixfrCmd.CombinedOutput()
+
+		axfrAllowed := !strings.Contains(string(axfrOutput), "Transfer failed") && len(axfrOutput) > 0
+		ixfrAllowed := !strings.Contains(string(ixfrOutput), "Transfer failed") && len(ixfrOutput) > 0
+
+		if axfrAllowed {
+			fmt.Println("  WARNING: AXFR (full zone transfer) is allowed!")
+			recordCount := strings.Count(string(axfrOutput), "\n")
+			fmt.Printf("  Received %d records in AXFR response\n", recordCount)
+		} else {
+			fmt.Println("  AXFR not allowed")
+		}
+
+		if ixfrAllowed {
+			fmt.Println("  WARNING: IXFR (incremental zone transfer) is allowed!")
+			recordCount := strings.Count(string(ixfrOutput), "\n")
+			fmt.Printf("  Received %d records in IXFR response\n", recordCount)
+		} else {
+			fmt.Println("  IXFR not allowed")
+		}
+
+		tcpConn, err := net.DialTimeout("tcp", ns.Host+":53", time.Second*5)
+		if err == nil {
+			tcpConn.Close()
+			fmt.Println("  TCP port 53 is open (required for zone transfers)")
+		} else {
+			fmt.Println("  TCP port 53 is closed or filtered")
+		}
+
+		dnssecCmd := exec.Command("dig", "+short", "+dnssec", domain, "DNSKEY", "@"+ns.Host)
+		dnssecOutput, _ := dnssecCmd.CombinedOutput()
+		if len(dnssecOutput) > 0 {
+			fmt.Println("  DNSSEC is enabled, which may provide additional security")
+		} else {
+			fmt.Println("  DNSSEC does not appear to be enabled")
+		}
+
+		fmt.Println("  Checking for rate limiting:")
+		for i := 0; i < 3; i++ {
+			start := time.Now()
+			exec.Command("dig", "+short", "+time=2", "+tries=1", "axfr", domain, "@"+ns.Host).Run()
+			elapsed := time.Since(start)
+			if elapsed > time.Second*2 {
+				fmt.Printf("    Attempt %d took %v. Possible rate limiting detected.\n", i+1, elapsed)
+				break
+			}
+			if i == 2 {
+				fmt.Println("    No obvious rate limiting detected.")
+			}
+			time.Sleep(time.Millisecond * 100)
+		}
+	}
+}
+
+func checkDNSAmplification(domain string) {
+	fmt.Println("\n[DNS Amplification Vulnerability Check]")
+
+	queryTypes := []string{"ANY", "TXT", "RRSIG", "DNSKEY"}
+
+	for _, qtype := range queryTypes {
+		cmd := exec.Command("dig", "+short", "+stats", qtype, domain)
+		output, _ := cmd.CombinedOutput()
+
+		stats := strings.Split(string(output), ";;")
+		for _, stat := range stats {
+			if strings.Contains(stat, "bytes") {
+				parts := strings.Fields(stat)
+				if len(parts) >= 4 {
+					querySize, _ := strconv.Atoi(parts[1])
+					responseSize, _ := strconv.Atoi(parts[3])
+					amplificationFactor := float64(responseSize) / float64(querySize)
+
+					fmt.Printf("%s query:\n", qtype)
+					fmt.Printf("  Query size: %d bytes\n", querySize)
+					fmt.Printf("  Response size: %d bytes\n", responseSize)
+					fmt.Printf("  Amplification factor: %.2f\n", amplificationFactor)
+
+					if amplificationFactor > 4 {
+						fmt.Printf("  Warning: High amplification factor for %s query\n", qtype)
+					}
+				}
+				break
+			}
+		}
+	}
+}
+
+func checkAXFR(domain string) {
+	fmt.Println("\n[AXFR/IFXR Check]")
+
+	nameservers, err := net.LookupNS(domain)
+	if err != nil {
+		fmt.Printf("Error looking up nameservers: %v\n", err)
+		return
+	}
+
+	fmt.Println("\n[AXFR Check]")
+	for _, ns := range nameservers {
+		fmt.Printf("Attempting AXFR from %s:\n", ns.Host)
+		cmd := exec.Command("dig", "+short", "axfr", domain, "@"+ns.Host)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			fmt.Printf("  Error executing dig command: %v\n", err)
+			continue
+		}
+
+		outputStr := string(output)
+		if strings.Contains(outputStr, "Transfer failed.") || strings.Contains(outputStr, "connection refused") {
+			fmt.Println("  AXFR not allowed")
+		} else if len(outputStr) > 0 {
+			fmt.Println("  AXFR allowed! Analyzing transfer:")
+			records := strings.Split(outputStr, "\n")
+			recordCount := len(records)
+			fmt.Printf("  Total records transferred: %d\n", recordCount)
+
+			recordTypes := make(map[string]int)
+			for _, record := range records {
+				fields := strings.Fields(record)
+				if len(fields) >= 4 {
+					recordTypes[fields[3]]++
+				}
+			}
+
+			fmt.Println("  Record type distribution:")
+			for rtype, count := range recordTypes {
+				fmt.Printf("    %s: %d\n", rtype, count)
+			}
+
+			sensitiveInfo := []string{"AAAA", "MX", "TXT", "SRV"}
+			for _, info := range sensitiveInfo {
+				if count, ok := recordTypes[info]; ok {
+					fmt.Printf("  Warning: %d %s records found. These may contain sensitive information.\n", count, info)
+				}
+			}
+
+			if recordTypes["SOA"] != 2 {
+				fmt.Println("  Warning: Unusual number of SOA records. Expected 2 (start and end of transfer).")
+			}
+			if recordTypes["NS"] < 2 {
+				fmt.Println("  Warning: Less than 2 NS records found. This is unusual for a valid zone.")
+			}
+
+			fmt.Println("  Attempting IXFR to check for incremental transfer support:")
+			ixfrCmd := exec.Command("dig", "+short", "ixfr=1", domain, "@"+ns.Host)
+			ixfrOutput, _ := ixfrCmd.CombinedOutput()
+			if strings.Contains(string(ixfrOutput), "Transfer failed.") {
+				fmt.Println("    IXFR not supported or not allowed")
+			} else {
+				fmt.Println("    IXFR might be supported. This could be a security risk if unintended.")
+			}
+
+		} else {
+			fmt.Println("  No AXFR data received. Transfer might be restricted or server might not support AXFR.")
+		}
+
+		fmt.Println("  Checking for rate limiting:")
+		for i := 0; i < 5; i++ {
+			start := time.Now()
+			exec.Command("dig", "+short", "axfr", domain, "@"+ns.Host).Run()
+			elapsed := time.Since(start)
+			if elapsed > time.Second*2 {
+				fmt.Printf("    Attempt %d took %v. Possible rate limiting detected.\n", i+1, elapsed)
+				break
+			}
+			if i == 4 {
+				fmt.Println("    No obvious rate limiting detected.")
+			}
+			time.Sleep(time.Millisecond * 100)
 		}
 	}
 }
